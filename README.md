@@ -48,3 +48,29 @@ Stage B builds 10 requests, each a dense tool_result with ~5 freshly-generated
 random tokens (so the model cannot have memorized them), transforms each twice
 (guard OFF / ON), asks `claude-fable-5` to reproduce every token verbatim, and
 reports per-arm exact-match recall and image-token cost.
+
+## Run as a proxy
+
+Runs a local proxy that fronts the Anthropic API, injects the `keepSharp`
+guard into pxpipe's transform, and serves a live monitoring dashboard:
+
+```sh
+npm run serve
+```
+
+Then point Claude Code at it:
+
+```sh
+ANTHROPIC_BASE_URL=http://127.0.0.1:47899 claude --model claude-fable-5
+```
+
+The dashboard is at `http://127.0.0.1:47899/`; its compression toggle acts as
+a kill switch for the guard. Environment variables:
+
+| Var | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `47899` | Listen port |
+| `HOST` | `127.0.0.1` | Listen host |
+| `ANTHROPIC_UPSTREAM` | `https://api.anthropic.com` | Upstream API (also `PXPIPE_UPSTREAM`) |
+| `PXPIPE_MODELS` | `claude-fable-5` | Comma-separated models the guard transforms; others pass through as text |
+| `PXPIPE_LOG` | `~/.pxpipe/events.jsonl` | JSONL event log |
