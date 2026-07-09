@@ -2,9 +2,9 @@ import { CORPUS } from "./corpus.js";
 import { hasByteExactContent } from "./guard.js";
 
 const PROSE = CORPUS.filter(
-  (b) => !b.byteExact && !hasByteExactContent(b.text),
+  (b) => !b.exact && !hasByteExactContent(b.text),
 ).map((b) => b.text);
-const SECRETS = CORPUS.filter((b) => b.byteExact).map((b) => b.text);
+const SECRETS = CORPUS.filter((b) => b.keepText).map((b) => b.text);
 
 /** Token-dense long-line content (log/JSON shaped) so imaging is profitable —
  *  pxpipe passes short-line prose through as `not_profitable`. When `withSecrets`,

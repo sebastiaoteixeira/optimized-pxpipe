@@ -10,44 +10,67 @@ const CHARS_PER_TOKEN = 3.1;
 
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 
-// ---- Stage A.1: guard accuracy over the labeled corpus ----------------------
-const evaluateCorpus = () => {
+// ---- Stage A.1: accuracy over the labeled corpus, on both axes --------------
+/** Score a boolean predictor against a boolean label over the corpus. */
+const confusion = (
+  predict: (text: string) => boolean,
+  label: (b: (typeof CORPUS)[number]) => boolean,
+) => {
   let tp = 0,
     fp = 0,
     tn = 0,
     fn = 0;
   const mistakes: string[] = [];
-  for (const { text, byteExact } of CORPUS) {
-    const predicted = hasByteExactContent(text);
-    if (predicted && byteExact) tp++;
-    else if (predicted && !byteExact) {
+  for (const b of CORPUS) {
+    const p = predict(b.text);
+    const y = label(b);
+    if (p && y) tp++;
+    else if (p && !y) {
       fp++;
-      mistakes.push(`FALSE POSITIVE: ${text.slice(0, 70)}`);
-    } else if (!predicted && !byteExact) tn++;
+      mistakes.push(`FALSE POSITIVE: ${b.text.slice(0, 68)}`);
+    } else if (!p && !y) tn++;
     else {
       fn++;
-      mistakes.push(`FALSE NEGATIVE: ${text.slice(0, 70)}`);
+      mistakes.push(`FALSE NEGATIVE: ${b.text.slice(0, 68)}`);
     }
   }
   const precision = tp / (tp + fp || 1);
   const recall = tp / (tp + fn || 1);
   const f1 = (2 * precision * recall) / (precision + recall || 1);
+  return { tp, fp, tn, fn, precision, recall, f1, mistakes };
+};
 
-  console.log("=== Stage A.1 — guard accuracy on labeled corpus ===\n");
-  console.log(`Blocks: ${CORPUS.length}\n`);
+const reportMatrix = (
+  title: string,
+  m: ReturnType<typeof confusion>,
+) => {
+  console.log(title);
   console.log("             predicted+   predicted-");
-  console.log(`actual+        TP=${tp}         FN=${fn}`);
-  console.log(`actual-        FP=${fp}         TN=${tn}\n`);
-  console.log(`precision = ${precision.toFixed(3)}`);
-  console.log(`recall    = ${recall.toFixed(3)}`);
-  console.log(`f1        = ${f1.toFixed(3)}\n`);
-  if (mistakes.length) {
+  console.log(`actual+        TP=${m.tp}         FN=${m.fn}`);
+  console.log(`actual-        FP=${m.fp}         TN=${m.tn}`);
+  console.log(
+    `precision=${m.precision.toFixed(3)}  recall=${m.recall.toFixed(3)}  f1=${m.f1.toFixed(3)}`,
+  );
+  if (m.mistakes.length) {
     console.log("misclassified:");
-    for (const m of mistakes) console.log("  " + m);
-  } else {
-    console.log("no misclassifications.");
+    for (const s of m.mistakes) console.log("  " + s);
   }
   console.log("");
+};
+
+const evaluateCorpus = () => {
+  console.log("=== Stage A.1 — accuracy on labeled corpus ===\n");
+  console.log(`Blocks: ${CORPUS.length}\n`);
+  // Detector axis: does the syntax detector recognize machine-precise values?
+  reportMatrix(
+    "-- detector vs `exact` (is the value machine-precise?) --",
+    confusion(hasByteExactContent, (b) => b.exact),
+  );
+  // Policy axis: does keepSharp pin exactly the blocks that must stay text?
+  reportMatrix(
+    "-- keepSharp vs `keepText` (should the guard pin it?) --",
+    confusion((t) => keepSharp({ kind: "tool_result", text: t }), (b) => b.keepText),
+  );
 };
 
 // ---- Stage A.2: retained savings on a large synthetic request ---------------
