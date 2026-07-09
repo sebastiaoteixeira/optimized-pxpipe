@@ -61,7 +61,7 @@ npm run serve
 Then point Claude Code at it:
 
 ```sh
-ANTHROPIC_BASE_URL=http://127.0.0.1:47899 claude --model claude-fable-5
+ANTHROPIC_BASE_URL=http://127.0.0.1:47899 claude
 ```
 
 The dashboard is at `http://127.0.0.1:47899/`; its compression toggle acts as

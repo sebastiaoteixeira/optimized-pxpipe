@@ -14,6 +14,8 @@ export const BYTE_EXACT_PATTERNS: readonly RegExp[] = [
   /\b(?=[A-Za-z0-9+/]*[0-9+/])[A-Za-z0-9+/]{20,}={0,2}\b/, // base64 runs >= 20 (must carry a digit/symbol, not a plain word)
   /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/, // JWT (three long base64url segments)
   /\b\d{10,}\b/, // long digit runs >= 10
+  /\b\d+\.\d+\.\d+\b/, // semantic version (x.y.z) — low-entropy but load-bearing
+  /\b\d{3}(?:[-.\s]\d{2,4}){1,3}\b/, // grouped/formatted numbers (phone, contact ids)
   /\b(?:sk|pk|rk)-[A-Za-z0-9]{8,}\b/, // API key prefixes (OpenAI/Stripe style)
   /\bgh[pousr]_[A-Za-z0-9]{16,}\b/, // GitHub tokens
   /\bAKIA[0-9A-Z]{12,}\b/, // AWS access key id
@@ -37,6 +39,9 @@ const hasHighEntropyToken = (text: string): boolean =>
     .some(
       (t) =>
         t.length >= ENTROPY_MIN_TOKEN_LEN &&
+        // Opaque tokens carry a non-letter (digit/symbol); plain words don't.
+        // This keeps the fallback off long natural-language words.
+        /[^A-Za-z]/.test(t) &&
         shannonEntropy(t) >= ENTROPY_BITS_THRESHOLD,
     );
 
