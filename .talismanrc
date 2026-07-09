@@ -1,0 +1,7 @@
+fileignoreconfig:
+- filename: src/corpus.ts
+  checksum: 9bad238ef6875c12e31789ae27ea3b60ca8dec75808eb3692e208faec90d0a23
+- filename: package-lock.json
+  checksum: 3a2841b40834c4a21d443791da4417a2498803afbc3b1762bc94f6c0995bff43
+threshold: medium
+version: "1.0"

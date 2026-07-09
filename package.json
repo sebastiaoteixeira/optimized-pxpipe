@@ -1,0 +1,17 @@
+{
+  "name": "optimized-pxpipe",
+  "version": "1.0.0",
+  "description": "Byte-exact content guard PoC for the pxpipe-proxy image-compression pipeline",
+  "type": "module",
+  "scripts": {
+    "stage-a": "tsx src/stageA.ts",
+    "stage-b": "tsx src/stageB.ts"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "pxpipe-proxy": "^0.8.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
+  }
+}
