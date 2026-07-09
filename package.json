@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "stage-a": "tsx src/stageA.ts",
-    "stage-b": "tsx src/stageB.ts"
+    "stage-b": "tsx src/stageB.ts",
+    "serve": "tsx src/serve.ts"
   },
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {
     "pxpipe-proxy": "^0.8.0"
   },
