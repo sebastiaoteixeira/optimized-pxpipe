@@ -6,7 +6,8 @@
   "scripts": {
     "stage-a": "tsx src/stageA.ts",
     "stage-b": "tsx src/stageB.ts",
-    "serve": "tsx src/serve.ts"
+    "serve": "tsx src/serve.ts",
+    "test": "tsx tests/pricing.test.ts"
   },
   "license": "MIT",
   "dependencies": {
