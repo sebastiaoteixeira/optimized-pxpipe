@@ -164,17 +164,179 @@ async function writeWebResponse(res: Response, out: ServerResponse): Promise<voi
   }
 }
 
-async function readRequestBody(req: IncomingMessage): Promise<string> {
-  const MAX = 1024 * 1024;
+async function readRequestBody(
+  req: IncomingMessage,
+  maxBytes = 1024 * 1024,
+): Promise<string> {
   let bytes = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
     const b = chunk as Buffer;
     bytes += b.byteLength;
-    if (bytes > MAX) throw new Error("request body too large");
+    if (bytes > maxBytes) throw new Error("request body too large");
     chunks.push(b);
   }
   return Buffer.concat(chunks).toString("utf8");
+}
+
+// --- Auto-mode classifier bypass ----------------------------------------------
+// Claude Code's "auto" permission mode runs a command-safety classifier as a
+// separate Messages call that expects a terse `</block>`-terminated XML verdict.
+// If pxpipe images that request, the weak, tiny-budget classifier reads pixels
+// instead of text, overruns its `max_tokens` before closing the tag, and Claude
+// Code fails CLOSED ("Auto mode could not evaluate this action"). The fix is to
+// send classifier/auxiliary calls AROUND pxpipe's imaging — straight to the
+// upstream API as plain text — and to retry transient upstream errors, since
+// those also make the classifier fail closed.
+
+/** Transient upstream statuses worth retrying. Auth (401) and client/4xx are
+ *  excluded — retrying won't change their outcome. */
+const RETRYABLE_UPSTREAM = new Set([429, 502, 503, 529]);
+const AUX_RETRY_MAX = 3;
+/** Generous cap for buffering a /v1/messages body to inspect it. A classifier
+ *  call can carry a full transcript (~100 KB+), so this must exceed the main
+ *  loop's request size; it only guards against pathological bodies. */
+const FORWARD_BUFFER_LIMIT = 8 * 1024 * 1024;
+
+/** Detect a retry-safe auxiliary Messages call. Primary target is Claude Code's
+ *  auto-mode command-safety classifier, whose wire fingerprint is first-party
+ *  (from the CC 2.1.x binary): a `</block>` stop sequence on the XML stage,
+ *  and/or the distinctive permissions-rules system prompt (`skipSystemPromptPrefix`,
+ *  `<permissions_template>`, `soft_deny`/`hard_deny`). Falls back to the generic
+ *  "tool-less, tiny output" shape for the fast stage and short title/topic
+ *  helpers. All of these fail CLOSED on a non-200 and are idempotent, so they
+ *  are safe to retry. */
+function isRetriableAuxiliary(body: string): boolean {
+  try {
+    const j = JSON.parse(body) as {
+      tools?: unknown;
+      max_tokens?: unknown;
+      stop_sequences?: unknown;
+      system?: unknown;
+    };
+    const stops = Array.isArray(j.stop_sequences) ? j.stop_sequences : [];
+    if (stops.includes("</block>")) return true;
+
+    const sys =
+      typeof j.system === "string"
+        ? j.system
+        : Array.isArray(j.system)
+          ? j.system
+              .map((b) =>
+                b && typeof b === "object" ? ((b as { text?: string }).text ?? "") : "",
+              )
+              .join(" ")
+          : "";
+    if (/permissions_template|soft_deny|hard_deny/.test(sys)) return true;
+
+    const noTools = !Array.isArray(j.tools) || j.tools.length === 0;
+    const tinyOutput = typeof j.max_tokens === "number" && j.max_tokens <= 512;
+    return noTools && tinyOutput;
+  } catch {
+    return false;
+  }
+}
+
+/** Rebuild a web Request from a buffered body so the call can be retried (a
+ *  streamed IncomingMessage body can only be read once). Content-Length is
+ *  dropped so undici recomputes it from the buffer. */
+function webRequestFromBody(req: IncomingMessage, body: string): Request {
+  const proto = req.headers["x-forwarded-proto"] ?? "http";
+  const url = `${proto}://${req.headers.host ?? "localhost"}${req.url ?? "/"}`;
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(req.headers)) {
+    if (v == null || k.toLowerCase() === "content-length") continue;
+    if (Array.isArray(v)) v.forEach((vv) => headers.append(k, vv));
+    else headers.append(k, v);
+  }
+  return new Request(url, { method: req.method ?? "POST", headers, body });
+}
+
+/** Forward a call straight to the upstream API, bypassing pxpipe entirely so it
+ *  is NEVER imaged — the whole point for the classifier, whose terse XML output
+ *  imaging corrupts. Auth and other headers pass through untouched;
+ *  content-length/host/connection are dropped so fetch recomputes them. */
+async function forwardDirect(
+  req: IncomingMessage,
+  body: string,
+): Promise<Response> {
+  const url = anthropicUpstream.replace(/\/+$/, "") + (req.url ?? "/");
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(req.headers)) {
+    const lk = k.toLowerCase();
+    if (v == null || lk === "content-length" || lk === "host" || lk === "connection")
+      continue;
+    if (Array.isArray(v)) v.forEach((vv) => headers.append(k, vv));
+    else headers.append(k, v);
+  }
+  try {
+    const res = await fetch(url, { method: req.method ?? "POST", headers, body });
+    // undici transparently DECOMPRESSES the response body but leaves the
+    // `content-encoding` and (compressed) `content-length` headers in place.
+    // Forwarding those verbatim with the already-decoded body makes the client
+    // double-decode → corruption. Drop them so the passthrough is faithful; the
+    // body is re-streamed and Node sets framing itself.
+    const outHeaders = new Headers(res.headers);
+    outHeaders.delete("content-encoding");
+    outHeaders.delete("content-length");
+    return new Response(res.body, {
+      status: res.status,
+      statusText: res.statusText,
+      headers: outHeaders,
+    });
+  } catch (err) {
+    console.error(`[guard]   direct fetch threw: ${(err as Error).message}`);
+    return new Response("upstream fetch failed", { status: 502 });
+  }
+}
+
+/** Forward to upstream. Auto-mode classifier / short auxiliary Messages calls
+ *  are detected and sent AROUND pxpipe's imaging (which corrupts their terse
+ *  XML output → auto mode fails closed), retrying transient errors. Everything
+ *  else goes through the normal imaging pipeline. Detection needs the body, and
+ *  a classifier call can carry a full transcript, so /v1/messages POSTs are
+ *  buffered; an oversize/unreadable body (pathological) is reported rather than
+ *  half-streamed. */
+async function forwardWithRetry(req: IncomingMessage): Promise<Response> {
+  const method = req.method ?? "GET";
+  const path = req.url ?? "/";
+  if (method !== "POST" || !path.includes("/v1/messages")) {
+    return handle(toWebRequest(req));
+  }
+
+  let body: string;
+  try {
+    body = await readRequestBody(req, FORWARD_BUFFER_LIMIT);
+  } catch {
+    return new Response("request body too large to inspect", { status: 413 });
+  }
+
+  if (!isRetriableAuxiliary(body)) {
+    return handle(webRequestFromBody(req, body));
+  }
+
+  console.log(
+    `[guard] auto-mode/aux call → direct passthrough, no imaging (${Math.round(body.length / 1024)}KB)`,
+  );
+  let res = await forwardDirect(req, body);
+  for (
+    let attempt = 1;
+    attempt <= AUX_RETRY_MAX && RETRYABLE_UPSTREAM.has(res.status);
+    attempt++
+  ) {
+    console.warn(`[guard]   direct ${res.status}; retry ${attempt}/${AUX_RETRY_MAX}`);
+    void res.body?.cancel().catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 150 * attempt));
+    res = await forwardDirect(req, body);
+  }
+  if (res.status >= 400) {
+    const detail = await res
+      .clone()
+      .text()
+      .catch(() => "");
+    console.error(`[guard]   direct failed ${res.status}: ${detail.slice(0, 200)}`);
+  }
+  return res;
 }
 
 async function dispatchDashboard(
@@ -414,7 +576,7 @@ const server = createServer((req, res) => {
           return;
         }
       }
-      const webRes = await handle(toWebRequest(req));
+      const webRes = await forwardWithRetry(req);
       await writeWebResponse(webRes, res);
     })
     .catch((err) => {
